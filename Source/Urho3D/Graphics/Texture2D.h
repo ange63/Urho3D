@@ -66,6 +66,10 @@ public:
     bool SetData(unsigned level, int x, int y, int width, int height, const void* data);
     /// Set data from an image. Return true if successful. Optionally make a single channel image alpha-only.
     bool SetData(Image* image, bool useAlpha = false);
+    /// Set data from an external OpenGl texture
+    bool SetData(unsigned handle, int width, int height, unsigned format, TextureUsage usage = TEXTURE_STATIC, int multiSample = 1, bool autoResolve = true);
+    /// Set data from an external D3D texture
+    //bool SetData(void* handle, int width, int height, unsigned format, TextureUsage usage = TEXTURE_STATIC, int multiSample = 1, bool autoResolve = true);
 
     /// Get data from a mip level. The destination buffer must be big enough. Return true if successful.
     bool GetData(unsigned level, void* dest) const;
@@ -81,6 +85,8 @@ public:
 protected:
     /// Create the GPU texture.
     bool Create() override;
+    /// Import GPU memory
+    bool Import() override;
 
 private:
     /// Handle render surface update event.
@@ -92,6 +98,8 @@ private:
     SharedPtr<Image> loadImage_;
     /// Parameter file acquired during BeginLoad.
     SharedPtr<XMLFile> loadParameters_;
+    /// True if Urho3D does not need to manage the memory
+    bool imported_;
 };
 
 }

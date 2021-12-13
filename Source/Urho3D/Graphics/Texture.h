@@ -226,6 +226,8 @@ protected:
     void CheckTextureBudget(StringHash type);
     /// Create the GPU texture. Implemented in subclasses.
     virtual bool Create() { return true; }
+    /// Import the GPU texture memory. Implemented in subclasses.
+    virtual bool Import() { return true; }
 
     /// OpenGL target.
     unsigned target_{};

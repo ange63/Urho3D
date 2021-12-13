@@ -40,7 +40,8 @@ namespace Urho3D
 {
 
 Texture2D::Texture2D(Context* context) :
-    Texture(context)
+    Texture(context),
+    imported_(false)
 {
 #ifdef URHO3D_OPENGL
     target_ = GL_TEXTURE_2D;
@@ -158,6 +159,67 @@ bool Texture2D::SetSize(int width, int height, unsigned format, TextureUsage usa
     autoResolve_ = autoResolve;
 
     return Create();
+}
+
+bool Texture2D::SetData(unsigned handle, int width, int height, unsigned format, TextureUsage usage, int multiSample, bool autoResolve)
+{
+    if (!handle)
+    {
+        URHO3D_LOGERROR("Null texture handle");
+        return false;
+    }
+    
+    if (width <= 0 || height <= 0)
+    {
+        URHO3D_LOGERROR("Zero or negative texture dimensions");
+        return false;
+    }
+
+    multiSample = Clamp(multiSample, 1, 16);
+    if (multiSample == 1)
+        autoResolve = false;
+    else if (multiSample > 1 && usage < TEXTURE_RENDERTARGET)
+    {
+        URHO3D_LOGERROR("Multisampling is only supported for rendertarget or depth-stencil textures");
+        return false;
+    }
+
+    // Disable mipmaps if multisample & custom resolve
+    if (multiSample > 1 && autoResolve == false)
+        requestedLevels_ = 1;
+
+    // Delete the old rendersurface if any
+    renderSurface_.Reset();
+
+    usage_ = usage;
+
+    if (usage >= TEXTURE_RENDERTARGET)
+    {
+        renderSurface_ = new RenderSurface(this);
+
+        // Clamp mode addressing by default and nearest filtering
+        addressModes_[COORD_U] = ADDRESS_CLAMP;
+        addressModes_[COORD_V] = ADDRESS_CLAMP;
+        filterMode_ = FILTER_NEAREST;
+    }
+
+    if (usage == TEXTURE_RENDERTARGET)
+        SubscribeToEvent(E_RENDERSURFACEUPDATE, URHO3D_HANDLER(Texture2D, HandleRenderSurfaceUpdate));
+    else
+        UnsubscribeFromEvent(E_RENDERSURFACEUPDATE);
+
+    width_ = width;
+    height_ = height;
+    format_ = format;
+    depth_ = 1;
+    multiSample_ = multiSample;
+    autoResolve_ = autoResolve;
+    
+    /// Store OpenGl texture handle
+    object_.name_ = handle;
+    imported_ = true;
+
+    return Import();
 }
 
 bool Texture2D::GetImage(Image& image) const

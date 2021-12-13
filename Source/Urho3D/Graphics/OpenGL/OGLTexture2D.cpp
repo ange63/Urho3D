@@ -41,7 +41,7 @@ namespace Urho3D
 
 void Texture2D::OnDeviceLost()
 {
-    if (object_.name_ && !graphics_->IsDeviceLost())
+    if (!imported_ && object_.name_ && !graphics_->IsDeviceLost())
         glDeleteTextures(1, &object_.name_);
 
     GPUObject::OnDeviceLost();
@@ -52,7 +52,7 @@ void Texture2D::OnDeviceLost()
 
 void Texture2D::OnDeviceReset()
 {
-    if (!object_.name_ || dataPending_)
+    if (!imported_ && (!object_.name_ || dataPending_))
     {
         // If has a resource file, reload through the resource cache. Otherwise just recreate.
         auto* cache = GetSubsystem<ResourceCache>();
@@ -76,7 +76,7 @@ void Texture2D::Release()
         if (!graphics_)
             return;
 
-        if (!graphics_->IsDeviceLost())
+        if (!imported_ && !graphics_->IsDeviceLost())
         {
             for (unsigned i = 0; i < MAX_TEXTURE_UNITS; ++i)
             {
@@ -90,7 +90,8 @@ void Texture2D::Release()
         if (renderSurface_)
             renderSurface_->Release();
 
-        object_.name_ = 0;
+        if (!imported_)
+            object_.name_ = 0;
     }
     else
     {
@@ -123,6 +124,8 @@ bool Texture2D::SetData(unsigned level, int x, int y, int width, int height, con
         URHO3D_LOGERROR("Illegal mip level for setting data");
         return false;
     }
+    
+    imported_ = false;
 
     if (graphics_->IsDeviceLost())
     {
@@ -176,6 +179,8 @@ bool Texture2D::SetData(Image* image, bool useAlpha)
         URHO3D_LOGERROR("Null image, can not set data");
         return false;
     }
+    
+    imported_ = false;
 
     // Use a shared ptr for managing the temporary mip images created during this function
     SharedPtr<Image> mipImage;
@@ -366,6 +371,9 @@ bool Texture2D::GetData(unsigned level, void* dest) const
 
 bool Texture2D::Create()
 {
+    if (imported_)
+        return true;
+    
     Release();
 
     if (!graphics_ || !width_ || !height_)
@@ -492,6 +500,134 @@ bool Texture2D::Create()
     graphics_->SetTexture(0, nullptr);
 
     return success;
+}
+
+bool Texture2D::Import()
+{
+    if (!imported_)
+        return true;
+    
+    Release();
+
+    if (!graphics_ || !width_ || !height_)
+        return false;
+
+    if (graphics_->IsDeviceLost())
+    {
+        URHO3D_LOGWARNING("Texture creation while device is lost");
+        return true;
+    }
+
+#ifdef GL_ES_VERSION_2_0
+    if (multiSample_ > 1)
+    {
+        URHO3D_LOGWARNING("Multisampled texture is not supported on OpenGL ES");
+        multiSample_ = 1;
+        autoResolve_ = false;
+    }
+#endif
+
+    unsigned format = GetSRGB() ? GetSRGBFormat(format_) : format_;
+    unsigned externalFormat = GetExternalFormat(format_);
+    unsigned dataType = GetDataType(format_);
+
+    // Create a renderbuffer instead of a texture if depth texture is not properly supported, or if this will be a packed
+    // depth stencil texture
+#ifndef GL_ES_VERSION_2_0
+    if (format == Graphics::GetDepthStencilFormat())
+#else
+    if (format == GL_DEPTH_COMPONENT16 || format == GL_DEPTH_COMPONENT24_OES || format == GL_DEPTH24_STENCIL8_OES ||
+        (format == GL_DEPTH_COMPONENT && !graphics_->GetShadowMapFormat()))
+#endif
+    {
+        /// TODO
+        URHO3D_LOGERROR("Cannot import OpenGl this texture format (not implemented)");
+        return false;
+        
+        if (renderSurface_)
+        {
+            renderSurface_->CreateRenderBuffer(width_, height_, format, multiSample_);
+            return true;
+        }
+        else
+            return false;
+    }
+    else
+    {
+        if (multiSample_ > 1)
+        {
+            /// TODO
+            URHO3D_LOGERROR("Cannot import OpenGl texture with multiSample > 1 (not implemented)");
+            return false;
+            
+            if (autoResolve_)
+            {
+                // Multisample with autoresolve: create a renderbuffer for rendering, but also a texture
+                renderSurface_->CreateRenderBuffer(width_, height_, format, multiSample_);
+            }
+            else
+            {
+                // Multisample without autoresolve: create a texture only
+#ifndef GL_ES_VERSION_2_0
+                if (!Graphics::GetGL3Support() && !GLEW_ARB_texture_multisample)
+                {
+                    URHO3D_LOGERROR("Multisampled texture extension not available");
+                    return false;
+                }
+
+                target_ = GL_TEXTURE_2D_MULTISAMPLE;
+                if (renderSurface_)
+                    renderSurface_->target_ = GL_TEXTURE_2D_MULTISAMPLE;
+#endif
+            }
+        }
+    }
+    
+/*
+    /// DEBUG this is ok
+    GLuint fbo{0};
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, object_.name_, 0);
+    glClearColor(1.f, 0.f, 1.f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glFinish();
+    glDeleteFramebuffers(1, &fbo);
+*/
+
+    // Ensure that our texture is bound to OpenGL texture unit 0
+    graphics_->SetTextureForUpdate(this);
+
+    // Set mipmapping
+    if (usage_ == TEXTURE_DEPTHSTENCIL || usage_ == TEXTURE_DYNAMIC)
+        requestedLevels_ = 1;
+    else if (usage_ == TEXTURE_RENDERTARGET)
+    {
+#if defined(__EMSCRIPTEN__) || defined(IOS) || defined(TVOS)
+        // glGenerateMipmap appears to not be working on WebGL or iOS/tvOS, disable rendertarget mipmaps for now
+        requestedLevels_ = 1;
+#else
+        if (requestedLevels_ != 1)
+        {
+            // Generate levels for the first time now
+            RegenerateLevels();
+            // Determine max. levels automatically
+            requestedLevels_ = 0;
+        }
+#endif
+    }
+
+    levels_ = CheckMaxLevels(width_, height_, requestedLevels_);
+#ifndef GL_ES_VERSION_2_0
+    glTexParameteri(target_, GL_TEXTURE_BASE_LEVEL, 0);
+    glTexParameteri(target_, GL_TEXTURE_MAX_LEVEL, levels_ - 1);
+#endif
+
+    // Set initial parameters, then unbind the texture
+    UpdateParameters();
+    graphics_->SetTexture(0, nullptr);
+
+    return true;
 }
 
 }

@@ -510,4 +510,10 @@ bool Texture2D::Create()
     return true;
 }
 
+bool Texture2D::Import()
+{
+    URHO3D_LOGD3DERROR("Cannot import D3D texture (not implemented)", hr);
+    return false;
+}
+
 }
